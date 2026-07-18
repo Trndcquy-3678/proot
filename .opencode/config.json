@@ -1,0 +1,6 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "name": "proot-termux",
+  "version": "5.1.1",
+  "instructions": "This is a Termux fork of PRoot. Read AGENTS.md for build/test/style/architecture instructions. Always run `make -C src clean && make -C src` before committing. Run `make -C tests` to verify no regressions. Follow K&R style with 8-space tabs. No auto-formatter is configured."
+}
