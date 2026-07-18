@@ -107,6 +107,19 @@ point to the overlaid content.  In most cases this default
 behavior shouldn\(aqt be a problem, although it is possible to
 explicitly not dereference the guest location by appending it the
 \fB!\fP character: \fB\-b *host_path*:*guest_location!*\fP\&.
+.sp
+To make a binding read\-only (all write syscalls return EROFS),
+append the \fBro\fP suffix: \fB\-b *host_path*:*guest_location*,ro\fP\&.
+This works with both the colon\-separated and plain path syntax:
+.sp
+.RS 4
+proot \-b /host/tmp:/tmp,ro ./my_program
+.RE
+.sp
+Any write attempt (creat, open with O_WRONLY/O_RDWR, unlink,
+mkdir, chmod, rename, etc.) inside the read\-only binding will
+fail with EROFS.  Read\-only operations (cat, stat, ls, etc.)
+still work normally.
 .TP
 .BI \-q \ command\fP,\fB \ \-\-qemu\fB= command
 Execute guest programs through QEMU as specified by \fIcommand\fP\&.

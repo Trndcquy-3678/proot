@@ -126,7 +126,7 @@ static int bind_proc_pid_auxv(const Tracee *ptracee)
 		return -1;
 
 	/* Note: this binding will be removed once ptracee gets freed.  */
-	binding = insort_binding3(ptracee, ptracee->life_context, host_path, guest_path);
+	binding = insort_binding3(ptracee, ptracee->life_context, host_path, guest_path, false);
 	if (binding == NULL)
 		return -1;
 

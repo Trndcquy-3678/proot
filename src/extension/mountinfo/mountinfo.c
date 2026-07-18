@@ -32,9 +32,12 @@ static void append_runtime_binding_lines(Tracee *target_tracee, FILE *fp)
 			continue;
 
 		fprintf(fp,
-			"%d %d 0:1 / %s rw,relatime - bind %s rw,relatime\n",
+			"%d %d 0:1 / %s %s,relatime - bind %s %s,relatime\n",
 			next_id++, parent_id,
-			binding->guest.path, binding->host.path);
+			binding->guest.path,
+			binding->read_only ? "ro" : "rw",
+			binding->host.path,
+			binding->read_only ? "ro" : "rw");
 	}
 }
 

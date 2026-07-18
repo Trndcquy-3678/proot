@@ -217,6 +217,17 @@ static int guest_canonicalize(Tracee *tracee, const char *user_path,
 }
 
 /**
+ * Return -EROFS if @guest_path (or an ancestor directory) falls within
+ * a read-only binding, 0 otherwise.
+ */
+static int check_read_only(Tracee *tracee, const char guest_path[PATH_MAX])
+{
+	if (is_read_only_binding(tracee, guest_path))
+		return -EROFS;
+	return 0;
+}
+
+/**
  * Emulate mount(@src_user, @target_user, @fstype, @flags) by adding a
  * PRoot binding from a host directory to the canonicalized target.
  * Bind mounts use the translated source; "proc"/"sysfs" use the
@@ -262,7 +273,8 @@ static void emulate_mount(Tracee *tracee, const char *src_user,
 	if (guest_canonicalize(tracee, target_user, guest_path) < 0)
 		return;
 
-	(void) insort_binding3(tracee, tracee->fs, host_path, guest_path);
+	(void) insort_binding3(tracee, tracee->fs, host_path, guest_path,
+			       (flags & MS_RDONLY) != 0);
 }
 
 /**
@@ -351,9 +363,9 @@ static void emulate_pivot_root(Tracee *tracee, const char *new_root_user,
 	 * put_old, so the tracee can still reach it (bubblewrap accesses
 	 * everything via "/oldroot" right after the pivot). */
 	remove_binding_from_all_lists(tracee, root_binding);
-	(void) insort_binding3(tracee, tracee->fs, new_root_host, "/");
+	(void) insort_binding3(tracee, tracee->fs, new_root_host, "/", false);
 	if (have_put_old)
-		(void) insort_binding3(tracee, tracee->fs, old_root_host, put_old_after);
+		(void) insort_binding3(tracee, tracee->fs, old_root_host, put_old_after, false);
 
 	for (i = 0; i < count; i++) {
 		Binding *b = snapshot[i];
@@ -376,7 +388,8 @@ static void emulate_pivot_root(Tracee *tracee, const char *new_root_user,
 		    && strncmp(b->guest.path, new_root_guest, new_root_len) == 0
 		    && b->guest.path[new_root_len] == '/') {
 			(void) insort_binding3(tracee, tracee->fs, b->host.path,
-					       b->guest.path + new_root_len);
+					       b->guest.path + new_root_len,
+					       b->read_only);
 			/* Drop the stale pre-pivot binding so it can't shadow
 			 * the rebased one (e.g. host->guest detranslation). */
 			remove_binding_from_all_lists(tracee, b);
@@ -400,7 +413,8 @@ static void emulate_pivot_root(Tracee *tracee, const char *new_root_user,
 				continue;
 
 			(void) insort_binding3(tracee, tracee->fs,
-					       b->host.path, aliased);
+					       b->host.path, aliased,
+					       b->read_only);
 		}
 	}
 
@@ -1970,29 +1984,41 @@ int translate_syscall_enter(Tracee *tracee)
 #undef POKE_WORD
 
 	case PR_access:
-	case PR_acct:
-	case PR_chmod:
-	case PR_chown:
-	case PR_chown32:
-	case PR_chroot:
 	case PR_getxattr:
 	case PR_listxattr:
-	case PR_mknod:
 	case PR_oldstat:
-	case PR_creat:
-	case PR_removexattr:
-	case PR_setxattr:
 	case PR_stat:
 	case PR_stat64:
 	case PR_statfs:
 	case PR_statfs64:
+		status = translate_sysarg(tracee, SYSARG_1, REGULAR);
+		break;
+
+	case PR_acct:
+	case PR_chroot:
 	case PR_swapoff:
 	case PR_swapon:
+	case PR_uselib:
+		status = translate_sysarg(tracee, SYSARG_1, REGULAR);
+		break;
+
+	case PR_chmod:
+	case PR_chown:
+	case PR_chown32:
+	case PR_creat:
+	case PR_mknod:
+	case PR_removexattr:
+	case PR_setxattr:
 	case PR_truncate:
 	case PR_truncate64:
-	case PR_uselib:
 	case PR_utime:
 	case PR_utimes:
+		status = get_sysarg_path(tracee, path, SYSARG_1);
+		if (status < 0)
+			break;
+		status = check_read_only(tracee, path);
+		if (status < 0)
+			break;
 		status = translate_sysarg(tracee, SYSARG_1, REGULAR);
 		break;
 
@@ -2078,6 +2104,18 @@ int translate_syscall_enter(Tracee *tracee)
 			tracee->restart_how = PTRACE_SYSCALL;
 		}
 
+		if (   ((flags & O_WRONLY) != 0)
+		    || ((flags & O_RDWR)   != 0)
+		    || ((flags & O_CREAT)  != 0)
+		    || ((flags & O_TRUNC)  != 0)) {
+			status = get_sysarg_path(tracee, path, SYSARG_1);
+			if (status < 0)
+				break;
+			status = check_read_only(tracee, path);
+			if (status < 0)
+				break;
+		}
+
 		if (   ((flags & O_NOFOLLOW) != 0)
 		    || ((flags & O_EXCL) != 0 && (flags & O_CREAT) != 0))
 			status = translate_sysarg(tracee, SYSARG_1, SYMLINK);
@@ -2087,7 +2125,6 @@ int translate_syscall_enter(Tracee *tracee)
 			maybe_redirect_userns_file(tracee, SYSARG_1);
 		break;
 
-	case PR_fchownat:
 	case PR_fstatat64:
 	case PR_newfstatat:
 	case PR_utimensat:
@@ -2098,8 +2135,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		flags = (  syscall_number == PR_fchownat
-			|| syscall_number == PR_name_to_handle_at)
+		flags = (  syscall_number == PR_name_to_handle_at)
 			? peek_reg(tracee, CURRENT, SYSARG_5)
 			: peek_reg(tracee, CURRENT, SYSARG_4);
 
@@ -2109,11 +2145,43 @@ int translate_syscall_enter(Tracee *tracee)
 			status = translate_path2(tracee, dirfd, path, SYSARG_2, REGULAR);
 		break;
 
+	case PR_fchownat:
+		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
+
+		status = get_sysarg_path(tracee, path, SYSARG_2);
+		if (status < 0)
+			break;
+
+		status = check_read_only(tracee, path);
+		if (status < 0)
+			break;
+
+		flags = peek_reg(tracee, CURRENT, SYSARG_5);
+
+		if ((flags & AT_SYMLINK_NOFOLLOW) != 0)
+			status = translate_path2(tracee, dirfd, path, SYSARG_2, SYMLINK);
+		else
+			status = translate_path2(tracee, dirfd, path, SYSARG_2, REGULAR);
+		break;
+
 	case PR_fchmodat:
-	case PR_faccessat:
-	case PR_faccessat2:
 	case PR_futimesat:
 	case PR_mknodat:
+		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
+
+		status = get_sysarg_path(tracee, path, SYSARG_2);
+		if (status < 0)
+			break;
+
+		status = check_read_only(tracee, path);
+		if (status < 0)
+			break;
+
+		status = translate_path2(tracee, dirfd, path, SYSARG_2, REGULAR);
+		break;
+
+	case PR_faccessat:
+	case PR_faccessat2:
 		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
 
 		status = get_sysarg_path(tracee, path, SYSARG_2);
@@ -2133,8 +2201,6 @@ int translate_syscall_enter(Tracee *tracee)
 		break;
 
 	case PR_readlink:
-	case PR_lchown:
-	case PR_lchown32:
 	case PR_lgetxattr:
 	case PR_llistxattr:
 	case PR_lremovexattr:
@@ -2142,8 +2208,28 @@ int translate_syscall_enter(Tracee *tracee)
 	case PR_lstat:
 	case PR_lstat64:
 	case PR_oldlstat:
+		status = translate_sysarg(tracee, SYSARG_1, SYMLINK);
+		break;
+
+	case PR_lchown:
+	case PR_lchown32:
+		status = get_sysarg_path(tracee, path, SYSARG_1);
+		if (status < 0)
+			break;
+		status = check_read_only(tracee, path);
+		if (status < 0)
+			break;
+		status = translate_sysarg(tracee, SYSARG_1, SYMLINK);
+		break;
+
 	case PR_unlink:
 	case PR_rmdir:
+		status = get_sysarg_path(tracee, path, SYSARG_1);
+		if (status < 0)
+			break;
+		status = check_read_only(tracee, path);
+		if (status < 0)
+			break;
 		status = translate_sysarg(tracee, SYSARG_1, SYMLINK);
 		break;
 
@@ -2152,6 +2238,10 @@ int translate_syscall_enter(Tracee *tracee)
 		 * parent only so PRoot doesn't probe the not-yet-existing name
 		 * (see translate_path2_parent).  */
 		status = get_sysarg_path(tracee, path, SYSARG_1);
+		if (status < 0)
+			break;
+
+		status = check_read_only(tracee, path);
 		if (status < 0)
 			break;
 
@@ -2168,6 +2258,10 @@ int translate_syscall_enter(Tracee *tracee)
 			break;
 
 		status = get_sysarg_path(tracee, newpath, SYSARG_4);
+		if (status < 0)
+			break;
+
+		status = check_read_only(tracee, newpath);
 		if (status < 0)
 			break;
 
@@ -2217,6 +2311,15 @@ int translate_syscall_enter(Tracee *tracee)
 			tracee->restart_how = PTRACE_SYSCALL;
 		}
 
+		if (   ((flags & O_WRONLY) != 0)
+		    || ((flags & O_RDWR)   != 0)
+		    || ((flags & O_CREAT)  != 0)
+		    || ((flags & O_TRUNC)  != 0)) {
+			status = check_read_only(tracee, path);
+			if (status < 0)
+				break;
+		}
+
 		if (   ((flags & O_NOFOLLOW) != 0)
 			|| ((flags & O_EXCL) != 0 && (flags & O_CREAT) != 0))
 			status = translate_path2(tracee, dirfd, path, SYSARG_2, SYMLINK);
@@ -2227,10 +2330,23 @@ int translate_syscall_enter(Tracee *tracee)
 		break;
 
 	case PR_readlinkat:
+		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
+
+		status = get_sysarg_path(tracee, path, SYSARG_2);
+		if (status < 0)
+			break;
+
+		status = translate_path2(tracee, dirfd, path, SYSARG_2, SYMLINK);
+		break;
+
 	case PR_unlinkat:
 		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
 
 		status = get_sysarg_path(tracee, path, SYSARG_2);
+		if (status < 0)
+			break;
+
+		status = check_read_only(tracee, path);
 		if (status < 0)
 			break;
 
@@ -2246,24 +2362,43 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
+		status = check_read_only(tracee, path);
+		if (status < 0)
+			break;
+
 		status = translate_path2_parent(tracee, dirfd, path, SYSARG_2);
 		break;
 
 	case PR_link:
-	case PR_rename:
+		status = get_sysarg_path(tracee, path, SYSARG_2);
+		if (status < 0)
+			break;
+
+		status = check_read_only(tracee, path);
+		if (status < 0)
+			break;
+
 		status = translate_sysarg(tracee, SYSARG_1, SYMLINK);
 		if (status < 0)
 			break;
 
-		if (syscall_number == PR_link) {
-			status = get_sysarg_path(tracee, path, SYSARG_2);
-			if (status < 0)
-				break;
+		status = translate_path2_parent(tracee, AT_FDCWD, path, SYSARG_2);
+		break;
 
-			status = translate_path2_parent(tracee, AT_FDCWD, path, SYSARG_2);
-		}
-		else
-			status = translate_sysarg(tracee, SYSARG_2, SYMLINK);
+	case PR_rename:
+		status = get_sysarg_path(tracee, path, SYSARG_2);
+		if (status < 0)
+			break;
+
+		status = check_read_only(tracee, path);
+		if (status < 0)
+			break;
+
+		status = translate_sysarg(tracee, SYSARG_1, SYMLINK);
+		if (status < 0)
+			break;
+
+		status = translate_sysarg(tracee, SYSARG_2, SYMLINK);
 		break;
 
 	case PR_renameat:
@@ -2276,6 +2411,10 @@ int translate_syscall_enter(Tracee *tracee)
 			break;
 
 		status = get_sysarg_path(tracee, newpath, SYSARG_4);
+		if (status < 0)
+			break;
+
+		status = check_read_only(tracee, newpath);
 		if (status < 0)
 			break;
 
@@ -2294,6 +2433,10 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
+		status = check_read_only(tracee, newpath);
+		if (status < 0)
+			break;
+
 		status = translate_path2_parent(tracee, AT_FDCWD, newpath, SYSARG_2);
 		break;
 
@@ -2301,6 +2444,10 @@ int translate_syscall_enter(Tracee *tracee)
 		newdirfd = peek_reg(tracee, CURRENT, SYSARG_2);
 
 		status = get_sysarg_path(tracee, newpath, SYSARG_3);
+		if (status < 0)
+			break;
+
+		status = check_read_only(tracee, newpath);
 		if (status < 0)
 			break;
 

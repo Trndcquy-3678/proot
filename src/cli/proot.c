@@ -42,7 +42,7 @@ static int handle_option_r(Tracee *tracee, const Cli *cli UNUSED, const char *va
 
 	/* ``chroot $PATH`` is semantically equivalent to ``mount
 	 * --bind $PATH /``.  */
-	binding = new_binding(tracee, value, "/", true);
+	binding = new_binding(tracee, value, "/", true, false);
 	if (binding == NULL)
 		return -1;
 
@@ -53,6 +53,7 @@ static int handle_option_b(Tracee *tracee, const Cli *cli UNUSED, const char *va
 {
 	char *host;
 	char *guest;
+	bool read_only = false;
 
 	host = talloc_strdup(tracee->ctx, value);
 	if (host == NULL) {
@@ -66,7 +67,17 @@ static int handle_option_b(Tracee *tracee, const Cli *cli UNUSED, const char *va
 		guest++;
 	}
 
-	new_binding(tracee, host, guest, true);
+	/* Check for ",ro" suffix on the guest path.  */
+	if (guest != NULL) {
+		size_t guest_len = strlen(guest);
+		if (guest_len >= 3
+		    && strcmp(guest + guest_len - 3, ",ro") == 0) {
+			guest[guest_len - 3] = '\0';
+			read_only = true;
+		}
+	}
+
+	new_binding(tracee, host, guest, true, read_only);
 	return 0;
 }
 
@@ -138,8 +149,8 @@ static int handle_option_q(Tracee *tracee, const Cli *cli UNUSED, const char *va
 	} while (!last);
 	assert(i == nb_args);
 
-	new_binding(tracee, "/", HOST_ROOTFS, true);
-	new_binding(tracee, "/dev/null", "/etc/ld.so.preload", false);
+	new_binding(tracee, "/", HOST_ROOTFS, true, false);
+	new_binding(tracee, "/dev/null", "/etc/ld.so.preload", false, false);
 
 	return 0;
 }
@@ -247,7 +258,7 @@ static void new_bindings(Tracee *tracee, const char *bindings[], const char *val
 			? expand_front_variable(tracee->ctx, bindings[i])
 			: value);
 
-		new_binding(tracee, path, NULL, false);
+		new_binding(tracee, path, NULL, false, false);
 	}
 }
 

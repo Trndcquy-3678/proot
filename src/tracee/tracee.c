@@ -563,7 +563,8 @@ int new_child(Tracee *parent, word_t clone_flags)
 			     iter = CIRCLEQ_NEXT(iter, link.guest))
 				(void) insort_binding3(child, child->fs,
 						       iter->host.path,
-						       iter->guest.path);
+						       iter->guest.path,
+						       iter->read_only);
 		}
 		else {
 			/* Bindings are shared across file-system name-spaces since a

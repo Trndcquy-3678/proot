@@ -225,6 +225,24 @@ const char *get_root(const Tracee* tracee)
 }
 
 /**
+ * Return true if @guest_path (or an ancestor directory) falls within
+ * a read-only binding, false otherwise.
+ */
+bool is_read_only_binding(const Tracee *tracee, const char guest_path[PATH_MAX])
+{
+	const Binding *binding;
+
+	if (guest_path == NULL || guest_path[0] != '/')
+		return false;
+
+	binding = get_binding(tracee, GUEST, guest_path);
+	if (binding == NULL)
+		return false;
+
+	return binding->read_only;
+}
+
+/**
  * Substitute the guest path (if any) with the host path in @path.
  * This function returns:
  *
@@ -395,7 +413,8 @@ static void insort_binding2(const Tracee *tracee, Binding *binding)
  */
 Binding *insort_binding3(const Tracee *tracee, const TALLOC_CTX *context,
 			const char host_path[PATH_MAX],
-			const char guest_path[PATH_MAX])
+			const char guest_path[PATH_MAX],
+			bool read_only)
 {
 	Binding *binding;
 
@@ -408,6 +427,7 @@ Binding *insort_binding3(const Tracee *tracee, const TALLOC_CTX *context,
 
 	binding->host.length = strlen(binding->host.path);
 	binding->guest.length = strlen(binding->guest.path);
+	binding->read_only = read_only;
 
 	insort_binding2(tracee, binding);
 
@@ -454,7 +474,7 @@ static int remove_bindings(Bindings *bindings)
  * missing @host path only if @must_exist is true.  This function
  * returns the allocated binding on success, NULL on error.
  */
-Binding *new_binding(Tracee *tracee, const char *host, const char *guest, bool must_exist)
+Binding *new_binding(Tracee *tracee, const char *host, const char *guest, bool must_exist, bool read_only)
 {
 	Binding *binding;
 	char base[PATH_MAX];
@@ -526,6 +546,7 @@ Binding *new_binding(Tracee *tracee, const char *host, const char *guest, bool m
 		goto error;
 	}
 	binding->guest.length = strlen(binding->guest.path);
+	binding->read_only = read_only;
 
 	/* Keep the list of bindings specified by the user ordered,
 	 * for the sake of consistency.  For instance binding to "/"

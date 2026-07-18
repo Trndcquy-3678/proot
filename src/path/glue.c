@@ -181,7 +181,7 @@ create_binding:
 
 	/* From the example, create the binding "/black" ->
 	 * "$GLUE/black".  */
-	binding = insort_binding3(tracee, tracee->glue, tracee->glue, guest_path);
+	binding = insort_binding3(tracee, tracee->glue, tracee->glue, guest_path, false);
 	if (binding == NULL)
 		return 0;
 

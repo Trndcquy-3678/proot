@@ -122,7 +122,11 @@ Copyright (C) 2015 STMicroelectronics, licensed under GPL v2 or later.",
 \tpoint to the overlaid content.  In most cases this default\n\
 \tbehavior shouldn't be a problem, although it is possible to\n\
 \texplicitly not dereference the guest location by appending it the\n\
-\t! character: -b *host_path*:*guest_location!*.",
+\t! character: -b *host_path*:*guest_location!*.\n\
+\t\n\
+\tTo make a binding read-only, append ,ro to the guest location:\n\
+\t-b *host_path*:*guest_location*,ro.  Write operations (open for\n\
+\twriting, unlink, mkdir, chmod, ...) will be denied with EROFS.",
 	},
 	{ .class = "Regular options",
 	  .arguments = {

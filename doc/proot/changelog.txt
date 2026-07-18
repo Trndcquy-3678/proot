@@ -1,3 +1,20 @@
+Release v5.1.1
+=======================================
+
+New features
+------------
+
++ Read-only bind mounts via the ``-b`` option.  Append ``,ro`` to
+  any ``-b`` argument to make the binding read-only.  All write
+  syscalls (creat, open with O_WRONLY/O_RDWR, unlink, mkdir,
+  chmod, rename, symlink, etc.) inside the binding will return
+  EROFS.  Read operations work normally.
+
+  Examples:
+
+      proot -b /host/tmp:/tmp,ro ./my_program
+      proot -b /path/to/rootfs,ro /bin/sh
+
 Release v5.1.0
 ==============
 

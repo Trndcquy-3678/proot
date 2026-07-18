@@ -133,7 +133,7 @@ int translate_socketcall_enter(Tracee *tracee, word_t *address, int size)
 			return -EINVAL;
 
 		/* Bing the guest path to a shorter host path.  */
-		binding = insort_binding3(tracee, tracee->ctx, shorter_host_path, user_path);
+		binding = insort_binding3(tracee, tracee->ctx, shorter_host_path, user_path, false);
 		if (binding == NULL)
 			return -EINVAL;
 

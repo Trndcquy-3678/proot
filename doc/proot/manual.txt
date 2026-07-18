@@ -98,6 +98,17 @@ Regular options
     explicitly not dereference the guest location by appending it the
     ``!`` character: ``-b *host_path*:*guest_location!*``.
 
+    To make a binding read-only (all write syscalls return EROFS),
+    append the ``ro`` suffix: ``-b *host_path*:*guest_location*,ro``.
+    This works with both the colon-separated and plain path syntax:
+
+        proot -b /host/tmp:/tmp,ro ./my_program
+
+    Any write attempt (creat, open with O_WRONLY/O_RDWR, unlink,
+    mkdir, chmod, rename, etc.) inside the read-only binding will
+    fail with EROFS.  Read-only operations (cat, stat, ls, etc.)
+    still work normally.
+
 -q command, --qemu=command
     Execute guest programs through QEMU as specified by *command*.
 
