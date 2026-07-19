@@ -62,6 +62,12 @@ typedef struct {
 
 	/* Current working directory, à la /proc/self/pwd.  */
 	char *cwd;
+
+	/* Opaque pointer to binding hash table (BindingHashTable in binding.h).  */
+	void *binding_hash_table;
+
+	/* Opaque pointer to path translation cache (PathCache in cache.h).  */
+	void *path_cache;
 } FileSystemNameSpace;
 
 /* Virtual heap, emulated with a regular memory mapping.  */

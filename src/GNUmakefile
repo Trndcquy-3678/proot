@@ -40,6 +40,7 @@ OBJECTS += \
 	path/path.o		\
 	path/proc.o		\
 	path/temp.o		\
+	path/cache.o		\
 	syscall/seccomp.o	\
 	syscall/syscall.o	\
 	syscall/chain.o		\

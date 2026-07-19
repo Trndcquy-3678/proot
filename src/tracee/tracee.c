@@ -37,6 +37,7 @@
 #include "tracee/reg.h"
 #include "tracee/mem.h"
 #include "path/binding.h"
+#include "path/cache.h"
 #include "syscall/sysnum.h"
 #include "tracee/event.h"
 #include "ptrace/ptrace.h"
@@ -558,6 +559,11 @@ int new_child(Tracee *parent, word_t clone_flags)
 			CIRCLEQ_INIT(child->fs->bindings.guest);
 			CIRCLEQ_INIT(child->fs->bindings.host);
 
+			/* Fresh, isolated lookup structures.  They are
+			 * populated below by insort_binding3().  */
+			child->fs->binding_hash_table = binding_hash_table_new(child->fs);
+			child->fs->path_cache         = path_cache_new(child->fs);
+
 			for (iter = CIRCLEQ_FIRST(parent->fs->bindings.guest);
 			     iter != (void *) parent->fs->bindings.guest;
 			     iter = CIRCLEQ_NEXT(iter, link.guest))
@@ -573,6 +579,13 @@ int new_child(Tracee *parent, word_t clone_flags)
 			 * reconfiguration occured (nested proot or chroot(2)).  */
 			child->fs->bindings.guest = talloc_reference(child->fs, parent->fs->bindings.guest);
 			child->fs->bindings.host  = talloc_reference(child->fs, parent->fs->bindings.host);
+
+			/* Share the parent's lookup structures too: they
+			 * index the very same (referenced) binding lists,
+			 * so a single source of truth keeps parent and
+			 * child consistent.  */
+			child->fs->binding_hash_table = talloc_reference(child->fs, parent->fs->binding_hash_table);
+			child->fs->path_cache         = talloc_reference(child->fs, parent->fs->path_cache);
 		}
 	}
 

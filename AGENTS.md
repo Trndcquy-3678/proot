@@ -1,4 +1,4 @@
-# PRoot Fork (Termux, v5.1.1)
+# PRoot Fork (Termux, v5.1.2)
 
 Termux-patched fork of [PRoot](https://github.com/proot-me/PRoot/) — user-space `chroot`/`mount --bind` via ptrace.
 

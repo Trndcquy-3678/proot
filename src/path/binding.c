@@ -24,15 +24,18 @@
 #include <unistd.h>   /* getcwd(2), lstat(2), */
 #include <string.h>   /* string(3),  */
 #include <strings.h>  /* bzero(3), */
+#include <stdlib.h>   /* getenv(3), */
 #include <assert.h>   /* assert(3), */
 #include <limits.h>   /* PATH_MAX, */
 #include <errno.h>    /* E* */
+#include <stdint.h>   /* uint32_t, */
 #include <sys/queue.h> /* CIRCLEQ_*, */
 #include <talloc.h>   /* talloc_*, */
 
 #include "path/binding.h"
 #include "path/path.h"
 #include "path/canon.h"
+#include "path/cache.h"
 #include "cli/note.h"
 
 #include "compat.h"
@@ -114,16 +117,175 @@ static void print_bindings(const Tracee *tracee)
 }
 
 /**
+ * Hash a path prefix (first two path components) into a bucket index.
+ */
+static inline uint32_t hash_path_prefix(const char *path, size_t length)
+{
+	uint32_t h = 5381;
+	size_t i;
+	int components = 0;
+
+	for (i = 0; i < length && components < 2; i++) {
+		h = h * 33 + (unsigned char)path[i];
+		if (path[i] == '/')
+			components++;
+	}
+	return h % BINDING_HASH_BUCKETS;
+}
+
+/**
+ * Allocate a new binding hash table.
+ */
+BindingHashTable *binding_hash_table_new(TALLOC_CTX *context)
+{
+	return talloc_zero(context, BindingHashTable);
+}
+
+/**
+ * Insert a binding into the hash table for the given @side.
+ */
+void binding_hash_table_insert(BindingHashTable *table,
+			const Binding *binding, int side)
+{
+	const Path *ref;
+	uint32_t idx;
+
+	if (table == NULL)
+		return;
+
+	ref = (side == GUEST) ? &binding->guest : &binding->host;
+	idx = hash_path_prefix(ref->path, ref->length);
+
+	/* Linear probing: find empty slot or existing entry.  */
+	while (table->buckets[idx].binding != NULL
+	       && table->buckets[idx].binding != binding)
+		idx = (idx + 1) % BINDING_HASH_BUCKETS;
+
+	table->buckets[idx].binding = binding;
+	table->buckets[idx].side = side;
+	table->count++;
+}
+
+/**
+ * Remove a binding from the hash table for the given @side.
+ */
+void binding_hash_table_remove(BindingHashTable *table,
+			const Binding *binding, int side)
+{
+	const Path *ref;
+	uint32_t idx;
+
+	if (table == NULL)
+		return;
+
+	ref = (side == GUEST) ? &binding->guest : &binding->host;
+	idx = hash_path_prefix(ref->path, ref->length);
+
+	/* Linear probing: find and clear the entry.  */
+	while (table->buckets[idx].binding != NULL) {
+		if (table->buckets[idx].binding == binding
+		    && table->buckets[idx].side == side) {
+			table->buckets[idx].binding = NULL;
+			table->buckets[idx].side = 0;
+			table->count--;
+			return;
+		}
+		idx = (idx + 1) % BINDING_HASH_BUCKETS;
+	}
+}
+
+/**
+ * Fast hash-based binding lookup. Returns the binding whose path is
+ * the *longest* prefix of (or equal to) @path, mirroring the
+ * deepest-first ordering of the CIRCLEQ lists.  Picking the longest
+ * prefix matters: when both "/app" and "/" match "/app/foo", the
+ * CIRCLEQ returns "/app" (e.g. a non-read-only binding) whereas a
+ * naive probe could wrongly return "/" (a read-only ancestor),
+ * spuriously failing with EROFS.
+ */
+static Binding *get_binding_hash(const Tracee *tracee, Side side,
+				 const char path[PATH_MAX])
+{
+	BindingHashTable *table;
+	size_t path_length;
+	uint32_t idx;
+	const Binding *best = NULL;
+	size_t best_length = 0;
+
+	table = (BindingHashTable *)tracee->fs->binding_hash_table;
+	if (table == NULL || table->count == 0)
+		return NULL;
+
+	path_length = strlen(path);
+
+	/* The table is tiny (BINDING_HASH_BUCKETS entries), so a full
+	 * linear scan is both cheap and robust: it sidesteps the classic
+	 * open-addressing "tombstone" pitfall where a cleared slot from a
+	 * removal would make a probe started elsewhere stop early and miss
+	 * a valid entry.  We still pick the *deepest* (longest) matching
+	 * prefix, mirroring the CIRCLEQ deepest-first ordering.  */
+	for (idx = 0; idx < BINDING_HASH_BUCKETS; idx++) {
+		const Binding *candidate;
+		Comparison comparison;
+		const Path *ref;
+
+		candidate = table->buckets[idx].binding;
+		if (candidate == NULL)
+			continue;
+		if (table->buckets[idx].side != (int)side)
+			continue;
+
+		switch (side) {
+		case GUEST:
+			ref = &candidate->guest;
+			break;
+		case HOST:
+			ref = &candidate->host;
+			break;
+		default:
+			return NULL;
+		}
+
+		comparison = compare_paths2(ref->path, ref->length,
+					    path, path_length);
+		if (comparison == PATHS_ARE_EQUAL
+		    || comparison == PATH1_IS_PREFIX) {
+			/* HOST-side false-positive guard.  */
+			if (side == HOST
+			    && compare_paths(get_root(tracee), "/") != PATHS_ARE_EQUAL
+			    && belongs_to_guestfs(tracee, path))
+				continue;
+
+			/* Keep the deepest (longest) matching prefix.  */
+			if (ref->length > best_length) {
+				best = candidate;
+				best_length = ref->length;
+			}
+		}
+	}
+
+	return (Binding *)(uintptr_t)best;
+}
+
+/**
  * Get the binding for the given @path (relatively to the given
  * binding @side).
  */
 Binding *get_binding(const Tracee *tracee, Side side, const char path[PATH_MAX])
 {
 	Binding *binding;
-	size_t path_length = strlen(path);
+	size_t path_length;
 
 	/* Sanity checks.  */
 	assert(path != NULL && path[0] == '/');
+
+	/* Try hash table first for O(1) lookup.  */
+	binding = get_binding_hash(tracee, side, path);
+	if (binding != NULL)
+		return binding;
+
+	/* Fallback: linear scan of CIRCLEQ.  */
+	path_length = strlen(path);
 
 	CIRCLEQ_FOREACH_(tracee, binding, side) {
 		Comparison comparison;
@@ -228,11 +390,37 @@ const char *get_root(const Tracee* tracee)
  * Return true if @guest_path (or an ancestor directory) falls within
  * a read-only binding, false otherwise.
  */
-bool is_read_only_binding(const Tracee *tracee, const char guest_path[PATH_MAX])
+bool is_read_only_binding(Tracee *tracee, const char guest_path[PATH_MAX])
 {
+	char abs_path[PATH_MAX];
 	const Binding *binding;
 
-	if (guest_path == NULL || guest_path[0] != '/')
+	if (guest_path == NULL || guest_path[0] == '\0')
+		return false;
+
+	/* Relative paths are resolved by the kernel against the
+	 * process cwd, so a read-only binding covering the cwd (or an
+	 * ancestor) must still forbid the operation.  Without this,
+	 * "touch x" inside a read-only mount would silently succeed
+	 * because the raw relative name never matched the binding.  */
+	if (guest_path[0] != '/') {
+		int dr;
+		char cwd[PATH_MAX];
+		if (getcwd2(tracee, cwd) < 0)
+			return false;
+		/* Use a distinct buffer for the cwd: passing abs_path as
+		 * both destination and source to join_paths aliases the
+		 * same buffer and corrupts the result.  */
+		dr = join_paths(2, abs_path, cwd, guest_path);
+		if (dr < 0)
+			return false;
+		guest_path = abs_path;
+	}
+
+	/* get_binding() requires an absolute path; if resolution above
+	 * couldn't make one (e.g. cwd unavailable), bail safely rather
+	 * than tripping its assertion.  */
+	if (guest_path[0] != '/')
 		return false;
 
 	binding = get_binding(tracee, GUEST, guest_path);
@@ -302,6 +490,18 @@ void remove_binding_from_all_lists(const Tracee *tracee, Binding *binding)
 
        if (IS_LINKED(binding, link.host))
 	       CIRCLEQ_REMOVE_(tracee, binding, host);
+
+       /* Keep the hash table consistent: drop any stale reference to
+	* this binding so get_binding_hash() never returns a dangling
+	* (freed) pointer after a replacement.  */
+       {
+	       BindingHashTable *table =
+		       (BindingHashTable *)tracee->fs->binding_hash_table;
+	       if (table != NULL) {
+		       binding_hash_table_remove(table, binding, GUEST);
+		       binding_hash_table_remove(table, binding, HOST);
+	       }
+       }
 }
 
 /**
@@ -398,11 +598,20 @@ static void insort_binding(const Tracee *tracee, Side side, Binding *binding)
  */
 static void insort_binding2(const Tracee *tracee, Binding *binding)
 {
+	BindingHashTable *table;
+
 	binding->need_substitution =
 		compare_paths(binding->host.path, binding->guest.path) != PATHS_ARE_EQUAL;
 
 	insort_binding(tracee, GUEST, binding);
 	insort_binding(tracee, HOST, binding);
+
+	/* Insert into hash table for fast lookups.  */
+	table = (BindingHashTable *)tracee->fs->binding_hash_table;
+	if (table != NULL) {
+		binding_hash_table_insert(table, binding, GUEST);
+		binding_hash_table_insert(table, binding, HOST);
+	}
 }
 
 /**
@@ -458,10 +667,12 @@ static int remove_bindings(Bindings *bindings)
 	tracee = TRACEE(bindings);
 	if (bindings == tracee->fs->bindings.pending)
 		CIRCLEQ_REMOVE_ALL(pending);
-	else if (bindings == tracee->fs->bindings.guest)
+	else if (bindings == tracee->fs->bindings.guest) {
 		CIRCLEQ_REMOVE_ALL(guest);
-	else if (bindings == tracee->fs->bindings.host)
+	}
+	else if (bindings == tracee->fs->bindings.host) {
 		CIRCLEQ_REMOVE_ALL(host);
+	}
 
 	bzero(bindings, sizeof(Bindings));
 
@@ -755,6 +966,16 @@ int initialize_bindings(Tracee *tracee)
 
 	talloc_set_destructor(tracee->fs->bindings.guest, remove_bindings);
 	talloc_set_destructor(tracee->fs->bindings.host, remove_bindings);
+
+	/* Allocate the hash table for fast binding lookups.  */
+	tracee->fs->binding_hash_table = binding_hash_table_new(tracee->fs);
+	if (tracee->fs->binding_hash_table == NULL) {
+		note(tracee, ERROR, INTERNAL, "can't allocate binding hash table");
+		return -1;
+	}
+
+	/* Allocate the path translation cache.  */
+	tracee->fs->path_cache = path_cache_new(tracee->fs);
 
 	/* The binding to "/" has to be installed before other
 	 * bindings since this former is required to canonicalize

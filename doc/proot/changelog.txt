@@ -1,3 +1,30 @@
+Release v5.1.2
+=======================================
+
+Bug fixes
+---------
+
++ Read-only bindings (``-b host:guest,ro``) now correctly block
+  write operations issued with a *relative* path.  Previously only
+  absolute paths were enforced, so ``touch x`` inside a read-only
+  mount would silently succeed.  The path is now resolved against
+  the process cwd before the EROFS check, matching the kernel's
+  own resolution.
+
++ Fixed a use-after-free / double-free of the binding hash table
+  that could crash PRoot (talloc "access after free") when a
+  traced process exited.
+
+Performance
+-----------
+
++ Bindings are now looked up through a hash-indexed table instead
+  of a linear scan, and path translations are cached per tracee.
+  Both speed up syscall interception, especially with many
+  bindings.  Forked children now share (or, for CLONE_NEWNS, own)
+  these structures instead of silently falling back to the linear
+  scan.
+
 Release v5.1.1
 =======================================
 

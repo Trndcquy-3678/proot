@@ -78,6 +78,7 @@
 #include "path/canon.h"
 #include "path/binding.h"
 #include "path/temp.h"
+#include "path/cache.h"
 #include "arch.h"
 
 /* Older kernel headers may lack these. */
@@ -102,16 +103,36 @@
 static int translate_path2(Tracee *tracee, int dir_fd, char path[PATH_MAX], Reg reg, Type type)
 {
 	char new_path[PATH_MAX];
+	char cwd[PATH_MAX];
 	int status;
 
 	/* Special case where the argument was NULL. */
 	if (path[0] == '\0')
 		return 0;
 
+	/* Try path cache for regular (non-symlink) translations with AT_FDCWD.  */
+	if (type == REGULAR && dir_fd == AT_FDCWD && tracee->fs->path_cache != NULL) {
+		if (getcwd2(tracee, cwd) == 0) {
+			bool cached_ro;
+			if (path_cache_lookup(tracee->fs->path_cache, path, cwd,
+					     dir_fd, new_path, &cached_ro)) {
+				return set_sysarg_path(tracee, new_path, reg);
+			}
+		}
+	}
+
 	/* Translate the original path. */
 	status = translate_path(tracee, new_path, dir_fd, path, type != SYMLINK);
 	if (status < 0)
 		return status;
+
+	/* Store successful translation in cache.  */
+	if (type == REGULAR && dir_fd == AT_FDCWD && tracee->fs->path_cache != NULL) {
+		if (getcwd2(tracee, cwd) == 0) {
+			path_cache_store(tracee->fs->path_cache, path, cwd,
+					 dir_fd, new_path, false);
+		}
+	}
 
 	return set_sysarg_path(tracee, new_path, reg);
 }
@@ -1498,6 +1519,34 @@ int translate_syscall_enter(Tracee *tracee)
 
 	/* Translate input arguments. */
 	syscall_number = get_sysnum(tracee, ORIGINAL);
+
+	/* Invalidate path cache for syscalls that modify the filesystem.  */
+	if (tracee->fs->path_cache != NULL) {
+		switch (syscall_number) {
+		case PR_rename:   case PR_renameat:  case PR_renameat2:
+		case PR_unlink:   case PR_unlinkat:
+		case PR_rmdir:
+		case PR_mkdir:    case PR_mkdirat:
+		case PR_mknod:    case PR_mknodat:
+		case PR_link:     case PR_linkat:
+		case PR_symlink:  case PR_symlinkat:
+		case PR_chmod:    case PR_fchmodat:
+		case PR_chown:    case PR_chown32:
+		case PR_fchownat: case PR_fchown:
+		case PR_lchown:   case PR_lchown32:
+		case PR_setxattr: case PR_lsetxattr:
+		case PR_removexattr: case PR_lremovexattr:
+		case PR_truncate: case PR_truncate64:
+		case PR_chdir:    case PR_fchdir:
+		case PR_mount:    case PR_umount:
+		case PR_umount2:  case PR_pivot_root:
+			path_cache_invalidate(tracee->fs->path_cache);
+			break;
+		default:
+			break;
+		}
+	}
+
 	switch (syscall_number) {
 	default:
 		/* Nothing to do. */

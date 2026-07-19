@@ -51,12 +51,31 @@ extern Binding *insort_binding3(const Tracee *tracee, const TALLOC_CTX *context,
 				bool read_only);
 extern Binding *new_binding(Tracee *tracee, const char *host, const char *guest,
 			    bool must_exist, bool read_only);
-extern bool is_read_only_binding(const Tracee *tracee, const char guest_path[PATH_MAX]);
+extern bool is_read_only_binding(Tracee *tracee, const char guest_path[PATH_MAX]);
 extern int initialize_bindings(Tracee *tracee);
 extern const char *get_path_binding(const Tracee* tracee, Side side, const char path[PATH_MAX]);
 extern Binding *get_binding(const Tracee *tracee, Side side, const char path[PATH_MAX]);
 extern const char *get_root(const Tracee* tracee);
 extern int substitute_binding(const Tracee* tracee, Side side, char path[PATH_MAX]);
 extern void remove_binding_from_all_lists(const Tracee *tracee, Binding *binding);
+
+/* Fast hash-indexed lookup table for bindings.  */
+#define BINDING_HASH_BUCKETS 32
+
+typedef struct binding_hash_entry {
+	const Binding *binding;
+	int side; /* GUEST or HOST */
+} BindingHashEntry;
+
+typedef struct binding_hash_table {
+	BindingHashEntry buckets[BINDING_HASH_BUCKETS];
+	size_t count;
+} BindingHashTable;
+
+extern BindingHashTable *binding_hash_table_new(TALLOC_CTX *context);
+extern void binding_hash_table_insert(BindingHashTable *table,
+			const Binding *binding, int side);
+extern void binding_hash_table_remove(BindingHashTable *table,
+			const Binding *binding, int side);
 
 #endif /* BINDING_H */
