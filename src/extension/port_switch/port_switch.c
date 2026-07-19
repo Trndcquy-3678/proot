@@ -234,17 +234,22 @@ bool is_localhost(struct sockaddr_storage *my_sockaddr) {
             struct sockaddr_in *in = (struct sockaddr_in *)my_sockaddr;
             char ipAddress[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &(in->sin_addr), ipAddress, INET_ADDRSTRLEN);
-            if(strcmp(ipAddress, "127.0.0.1") == 0)
+            /* localhost, or INADDR_ANY (0.0.0.0) which a server binds
+             * to by default and which Android also reserves low ports
+             * for — both must be rewritten.  */
+            if (   strcmp(ipAddress, "127.0.0.1") == 0
+                || in->sin_addr.s_addr == htonl(INADDR_ANY))
                 return true;
             else
                 return false;
         }
-    
+
         case AF_INET6: {
             struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)my_sockaddr;
             char ipAddress[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, &(in6->sin6_addr), ipAddress, INET6_ADDRSTRLEN);
-            if(strcmp(ipAddress, "::1") == 0)
+            if (   strcmp(ipAddress, "::1") == 0
+                || memcmp(&in6->sin6_addr, &in6addr_any, sizeof(in6addr_any)) == 0)
                 return true;
             else
                 return false;

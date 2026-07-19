@@ -2269,6 +2269,22 @@ int translate_syscall_enter(Tracee *tracee)
 		break;
 	}
 
+	case PR_fallocate: {
+		/* Like ftruncate, fallocate operates on an already-open fd
+		 * and must honour read-only bindings.  */
+		char fpath[PATH_MAX];
+		if (readlink_proc_pid_fd(tracee->pid,
+				(int) peek_reg(tracee, CURRENT, SYSARG_1), fpath) < 0)
+			break;
+		if (fpath[0] != '/')
+			break;
+		if (detranslate_path(tracee, fpath, NULL) < 0)
+			break;
+		if (is_read_only_binding(tracee, fpath))
+			status = -EROFS;
+		break;
+	}
+
 	case PR_faccessat:
 	case PR_faccessat2:
 		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
@@ -2559,6 +2575,28 @@ int translate_syscall_enter(Tracee *tracee)
 		);
 		break;
 
+	case PR_seccomp:
+		/* seccomp(SECCOMP_SET_MODE_FILTER, ...) is the other way a
+		 * tracee can install a filter that bypasses PRoot's syscall
+		 * interception.  Block it for the same reason as the prctl
+		 * path above; SECCOMP_SET_MODE_STRICT would also trap the
+		 * syscalls we emulate, so deny it too.  */
+#ifndef SECCOMP_SET_MODE_FILTER
+#define SECCOMP_SET_MODE_FILTER 1
+#endif
+#ifndef SECCOMP_SET_MODE_STRICT
+#define SECCOMP_SET_MODE_STRICT 0
+#endif
+		if (   peek_reg(tracee, CURRENT, SYSARG_1) == SECCOMP_SET_MODE_FILTER
+		    || peek_reg(tracee, CURRENT, SYSARG_1) == SECCOMP_SET_MODE_STRICT) {
+			VERBOSE(tracee, 1, "blocking tracee seccomp(SET_MODE_FILTER/"
+				"STRICT): would bypass PRoot");
+			poke_reg(tracee, SYSARG_RESULT, (word_t) -EPERM);
+			set_sysnum(tracee, PR_void);
+			status = 0;
+		}
+		break;
+
 	case PR_prctl:
 		/* Prevent tracees from setting dumpable flag.
 		 * (Otherwise it could break tracee memory access)  */
@@ -2567,24 +2605,19 @@ int translate_syscall_enter(Tracee *tracee)
 			set_sysnum(tracee, PR_void);
 			status = 0;
 		}
-		/* On kernels that don't support PTRACE_O_TRACESECCOMP,
-		 * SECCOMP_RET_TRACE causes filtered syscalls to return
-		 * -ENOSYS to the tracee without generating a ptrace event.
-		 * If a tracee installs its own SECCOMP_MODE_FILTER, the
-		 * syscalls proot must intercept (open, execve, ...) would
-		 * silently fail from proot's perspective.  Block the filter
-		 * installation so proot's PTRACE_SYSCALL path keeps working.
-		 * This situation is typical on old ARM 32-bit Android kernels
-		 * that backported seccomp but not PTRACE_O_TRACESECCOMP.  */
+		/* A tracee-installed seccomp filter can drop or divert the
+		 * syscalls PRoot must intercept (open, execve, ...), silently
+		 * breaking the emulation.  Block filter installation so PRoot's
+		 * PTRACE_SYSCALL path keeps working, regardless of whether the
+		 * kernel supports PTRACE_O_TRACESECCOMP (the filter would still
+		 * win over PRoot for any syscall it returns ERRNO/KILL for).  */
 #ifndef SECCOMP_MODE_FILTER
 #define SECCOMP_MODE_FILTER 2
 #endif
 		if (peek_reg(tracee, CURRENT, SYSARG_1) == PR_SET_SECCOMP
-		    && peek_reg(tracee, CURRENT, SYSARG_2) == SECCOMP_MODE_FILTER
-		    && !seccomp_ptrace_event_is_supported()) {
+		    && peek_reg(tracee, CURRENT, SYSARG_2) == SECCOMP_MODE_FILTER) {
 			VERBOSE(tracee, 1, "blocking tracee prctl(PR_SET_SECCOMP, "
-				"SECCOMP_MODE_FILTER): kernel lacks "
-				"PTRACE_EVENT_SECCOMP support");
+				"SECCOMP_MODE_FILTER): would bypass PRoot");
 			poke_reg(tracee, SYSARG_RESULT, (word_t) -EPERM);
 			set_sysnum(tracee, PR_void);
 			status = 0;
