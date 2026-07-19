@@ -44,6 +44,7 @@
 #include <netinet/in.h>  /* struct sockaddr_in / sockaddr_in6 */
 #include <netpacket/packet.h> /* struct sockaddr_ll (AF_PACKET) */
 #include <sys/ioctl.h>   /* ioctl(2): SIOCGIFMTU / SIOCGIFHWADDR */
+#include <sys/mman.h>    /* PROT_*, MAP_*, */
 #include <sys/time.h>    /* struct timeval, for SO_RCVTIMEO */
 #include "syscall/pipe_shadow.h"
 
@@ -2285,6 +2286,48 @@ int translate_syscall_enter(Tracee *tracee)
 		break;
 	}
 
+	case PR_mmap:
+	case PR_mmap2: {
+		/* A file-backed, writable mapping is another way to write
+		 * to a read-only binding through an already-open fd.  Skip
+		 * anonymous mappings (no backing file) and mappings that
+		 * are not writable.  */
+		word_t prot  = peek_reg(tracee, CURRENT, SYSARG_3);
+		word_t flags = peek_reg(tracee, CURRENT, SYSARG_4);
+		word_t fd    = peek_reg(tracee, CURRENT, SYSARG_5);
+		if (   (prot & PROT_WRITE) != 0
+		    && (flags & MAP_ANONYMOUS) == 0
+		    && fd != (word_t) -1) {
+			char fpath[PATH_MAX];
+			if (readlink_proc_pid_fd(tracee->pid,
+					(int) fd, fpath) < 0)
+				break;
+			if (fpath[0] != '/')
+				break;
+			if (detranslate_path(tracee, fpath, NULL) < 0)
+				break;
+			if (is_read_only_binding(tracee, fpath))
+				status = -EROFS;
+		}
+		break;
+	}
+
+	case PR_fsetxattr: {
+		/* fd-based xattr write: honour read-only bindings like the
+		 * path-based setxattr/removexattr/lsetxattr cases.  */
+		char fpath[PATH_MAX];
+		if (readlink_proc_pid_fd(tracee->pid,
+				(int) peek_reg(tracee, CURRENT, SYSARG_1), fpath) < 0)
+			break;
+		if (fpath[0] != '/')
+			break;
+		if (detranslate_path(tracee, fpath, NULL) < 0)
+			break;
+		if (is_read_only_binding(tracee, fpath))
+			status = -EROFS;
+		break;
+	}
+
 	case PR_faccessat:
 	case PR_faccessat2:
 		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
@@ -2659,6 +2702,30 @@ int translate_syscall_enter(Tracee *tracee)
 		if (cmd == SIOCGIFINDEX && maybe_fake_siocgifindex(tracee, cmd, arg)) {
 			poke_reg(tracee, SYSARG_RESULT, 0);
 			set_sysnum(tracee, PR_void);
+			break;
+		}
+
+		/* These socket ioctls mutate host network configuration
+		 * (interface addresses, routes, bridges, hwaddr, name).
+		 * They require CAP_NET_ADMIN on the *host*, so a tracee
+		 * running as root under PRoot could reconfigure the real
+		 * interfaces/routing table and escape the sandbox's
+		 * network view.  Deny them; nothing inside a guest rootfs
+		 * needs to change the host stack.  */
+		switch (cmd) {
+		case SIOCSIFADDR:
+		case SIOCSIFDSTADDR:
+		case SIOCSIFBRDADDR:
+		case SIOCSIFNETMASK:
+		case SIOCSIFHWADDR:
+		case SIOCSIFNAME:
+		case SIOCADDRT:
+		case SIOCDELRT:
+		case SIOCBRADDIF:
+		case SIOCBRDELIF:
+			poke_reg(tracee, SYSARG_RESULT, (word_t) -EPERM);
+			set_sysnum(tracee, PR_void);
+			status = 0;
 			break;
 		}
 
