@@ -25,6 +25,7 @@
 #include <string.h>      /* strncpy(3), strlen(3), */
 #include <assert.h>      /* assert(3), */
 #include <errno.h>       /* E*, */
+#include <unistd.h>      /* mkstemp(3), close(2), unlink(2), */
 #include <sys/socket.h>  /* struct sockaddr_un, AF_UNIX, */
 #include <sys/un.h>      /* struct sockaddr_un, */
 #include <sys/param.h>   /* MIN(), MAX(), */
@@ -120,7 +121,11 @@ int translate_socketcall_enter(Tracee *tracee, word_t *address, int size)
 		if (shorter_host_path == NULL || strlen(shorter_host_path) > sizeof_path)
 			return -EINVAL;
 
-		(void) mktemp(shorter_host_path);
+		int fd = mkstemp(shorter_host_path);
+		if (fd >= 0) {
+			close(fd);
+			unlink(shorter_host_path);
+		}
 
 		if (strlen(shorter_host_path) > sizeof_path)
 			return -EINVAL;

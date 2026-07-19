@@ -31,4 +31,6 @@ extern const char *create_temp_file(TALLOC_CTX *context, const char *prefix);
 extern FILE* open_temp_file(TALLOC_CTX *context, const char *prefix);
 extern const char *get_temp_directory();
 
+extern TALLOC_CTX *talloc_autofree(void);
+
 #endif /* TEMP_H */

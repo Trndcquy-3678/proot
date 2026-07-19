@@ -73,7 +73,7 @@ static void set_placeholder_destructor(const char *path)
 	TALLOC_CTX *autofreed;
 	char *placeholder;
 
-	autofreed = talloc_autofree_context();
+	autofreed = talloc_autofree();
 	if (autofreed == NULL)
 		return;
 

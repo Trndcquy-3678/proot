@@ -173,6 +173,8 @@ int ldso_env_passthru(const Tracee *tracee, ArrayOfXPointers *envp, ArrayOfXPoin
 		}
 	}
 
+	(void) is_known;
+
 	return 0;
 }
 

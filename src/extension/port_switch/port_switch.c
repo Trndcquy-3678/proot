@@ -171,7 +171,7 @@ void mod_port(Tracee *tracee, bool is_socketcall, bool is_bind, bool is_udp, str
 
                 if(is_socketcall && is_udp) {
                     write_data(tracee, socketcall_arg2[4], in, sizeof(in));
-                    write_data(tracee, peek_reg(tracee, CURRENT, SYSARG_2), socketcall_arg2, sizeof(socketcall_arg2));
+                    write_data(tracee, peek_reg(tracee, CURRENT, SYSARG_2), socketcall_arg2, 6 * sizeof(long));
                 }
 
                 else if(!is_socketcall && is_udp)
@@ -179,7 +179,7 @@ void mod_port(Tracee *tracee, bool is_socketcall, bool is_bind, bool is_udp, str
                 
                 else if(is_socketcall && !is_udp) {
                     write_data(tracee, socketcall_arg2[1], in, sizeof(in));
-                    write_data(tracee, peek_reg(tracee, CURRENT, SYSARG_2), socketcall_arg2, sizeof(socketcall_arg2));
+                    write_data(tracee, peek_reg(tracee, CURRENT, SYSARG_2), socketcall_arg2, 6 * sizeof(long));
                 }
 
                 else if(!is_socketcall && !is_udp)
@@ -201,7 +201,7 @@ void mod_port(Tracee *tracee, bool is_socketcall, bool is_bind, bool is_udp, str
     
                 if(is_socketcall && is_udp) { 
                     write_data(tracee, socketcall_arg2[4], in6, sizeof(in6));
-                    write_data(tracee, peek_reg(tracee, CURRENT, SYSARG_2), socketcall_arg2, sizeof(socketcall_arg2));
+                    write_data(tracee, peek_reg(tracee, CURRENT, SYSARG_2), socketcall_arg2, 6 * sizeof(long));
                 }
 
                 else if(is_socketcall && is_udp)
@@ -209,7 +209,7 @@ void mod_port(Tracee *tracee, bool is_socketcall, bool is_bind, bool is_udp, str
 
                 else if(is_socketcall && !is_udp) { 
                     write_data(tracee, socketcall_arg2[1], in6, sizeof(in6));
-                    write_data(tracee, peek_reg(tracee, CURRENT, SYSARG_2), socketcall_arg2, sizeof(socketcall_arg2));
+                    write_data(tracee, peek_reg(tracee, CURRENT, SYSARG_2), socketcall_arg2, 6 * sizeof(long));
                 }
 
                 else if(!is_socketcall && !is_udp)

@@ -811,7 +811,11 @@ void sysvipc_shm_helper_main() {
 	};
 	for (int i = 0;; i++) {
 		path = create_temp_name(NULL, "prootshm");
-		(void) mktemp(path);
+		int fd = mkstemp(path);
+		if (fd >= 0) {
+			close(fd);
+			unlink(path);
+		}
 
 		if (strlen(path) > SYSVIPC_SHMHELPER_SOCKET_LEN) {
 			close(socket_server_fd);
