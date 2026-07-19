@@ -161,6 +161,8 @@ int ldso_env_passthru(const Tracee *tracee, ArrayOfXPointers *envp, ArrayOfXPoin
 		PASSTHRU(is_known, "LD_USE_LOAD_BIAS");
 		PASSTHRU(is_known, "LD_VERBOSE");
 		PASSTHRU(is_known, "LD_WARN");
+
+		(void) is_known;
 	}
 
 	if (!has_seen_library_path) {
@@ -172,8 +174,6 @@ int ldso_env_passthru(const Tracee *tracee, ArrayOfXPointers *envp, ArrayOfXPoin
 				return status;
 		}
 	}
-
-	(void) is_known;
 
 	return 0;
 }

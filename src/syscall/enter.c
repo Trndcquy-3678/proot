@@ -241,8 +241,29 @@ static int guest_canonicalize(Tracee *tracee, const char *user_path,
  * Return -EROFS if @guest_path (or an ancestor directory) falls within
  * a read-only binding, 0 otherwise.
  */
-static int check_read_only(Tracee *tracee, const char guest_path[PATH_MAX])
+static int check_read_only(Tracee *tracee, int dirfd, const char guest_path[PATH_MAX])
 {
+	char abs_path[PATH_MAX];
+
+	/* For a relative path, resolve it against the directory referred
+	 * to by @dirfd (openat/linkat/renameat/...).  Without this, a
+	 * read-only binding could be escaped by opening a file relative
+	 * to an fd that already points inside the binding: the raw
+	 * relative name would be joined against the cwd instead and the
+	 * binding check would miss it.  */
+	if (guest_path[0] != '/' && dirfd != AT_FDCWD) {
+		char dir_path[PATH_MAX];
+		if (readlink_proc_pid_fd(tracee->pid, dirfd, dir_path) < 0)
+			return -EROFS;
+		if (dir_path[0] != '/')
+			return -EROFS;
+		if (detranslate_path(tracee, dir_path, NULL) < 0)
+			return -EROFS;
+		if (join_paths(2, abs_path, dir_path, guest_path) < 0)
+			return -EROFS;
+		guest_path = abs_path;
+	}
+
 	if (is_read_only_binding(tracee, guest_path))
 		return -EROFS;
 	return 0;
@@ -2065,7 +2086,7 @@ int translate_syscall_enter(Tracee *tracee)
 		status = get_sysarg_path(tracee, path, SYSARG_1);
 		if (status < 0)
 			break;
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, AT_FDCWD, path);
 		if (status < 0)
 			break;
 		status = translate_sysarg(tracee, SYSARG_1, REGULAR);
@@ -2160,7 +2181,7 @@ int translate_syscall_enter(Tracee *tracee)
 			status = get_sysarg_path(tracee, path, SYSARG_1);
 			if (status < 0)
 				break;
-			status = check_read_only(tracee, path);
+			status = check_read_only(tracee, AT_FDCWD, path);
 			if (status < 0)
 				break;
 		}
@@ -2201,7 +2222,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, dirfd, path);
 		if (status < 0)
 			break;
 
@@ -2222,12 +2243,31 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, dirfd, path);
 		if (status < 0)
 			break;
 
 		status = translate_path2(tracee, dirfd, path, SYSARG_2, REGULAR);
 		break;
+
+	case PR_ftruncate:
+	case PR_ftruncate64: {
+		/* fd-based truncation: resolve the fd to its guest path
+		 * and enforce read-only bindings, since the path-based
+		 * truncate/truncate64 checks can't see an already-open
+		 * descriptor (e.g. opened before the binding existed).  */
+		char fpath[PATH_MAX];
+		if (readlink_proc_pid_fd(tracee->pid,
+				(int) peek_reg(tracee, CURRENT, SYSARG_1), fpath) < 0)
+			break;
+		if (fpath[0] != '/')
+			break;
+		if (detranslate_path(tracee, fpath, NULL) < 0)
+			break;
+		if (is_read_only_binding(tracee, fpath))
+			status = -EROFS;
+		break;
+	}
 
 	case PR_faccessat:
 	case PR_faccessat2:
@@ -2265,7 +2305,7 @@ int translate_syscall_enter(Tracee *tracee)
 		status = get_sysarg_path(tracee, path, SYSARG_1);
 		if (status < 0)
 			break;
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, AT_FDCWD, path);
 		if (status < 0)
 			break;
 		status = translate_sysarg(tracee, SYSARG_1, SYMLINK);
@@ -2276,7 +2316,7 @@ int translate_syscall_enter(Tracee *tracee)
 		status = get_sysarg_path(tracee, path, SYSARG_1);
 		if (status < 0)
 			break;
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, AT_FDCWD, path);
 		if (status < 0)
 			break;
 		status = translate_sysarg(tracee, SYSARG_1, SYMLINK);
@@ -2290,7 +2330,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, AT_FDCWD, path);
 		if (status < 0)
 			break;
 
@@ -2310,7 +2350,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, newpath);
+		status = check_read_only(tracee, newdirfd, newpath);
 		if (status < 0)
 			break;
 
@@ -2364,7 +2404,7 @@ int translate_syscall_enter(Tracee *tracee)
 		    || ((flags & O_RDWR)   != 0)
 		    || ((flags & O_CREAT)  != 0)
 		    || ((flags & O_TRUNC)  != 0)) {
-			status = check_read_only(tracee, path);
+			status = check_read_only(tracee, dirfd, path);
 			if (status < 0)
 				break;
 		}
@@ -2395,7 +2435,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, dirfd, path);
 		if (status < 0)
 			break;
 
@@ -2411,7 +2451,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, dirfd, path);
 		if (status < 0)
 			break;
 
@@ -2423,7 +2463,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, AT_FDCWD, path);
 		if (status < 0)
 			break;
 
@@ -2439,7 +2479,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, path);
+		status = check_read_only(tracee, AT_FDCWD, path);
 		if (status < 0)
 			break;
 
@@ -2463,7 +2503,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, newpath);
+		status = check_read_only(tracee, newdirfd, newpath);
 		if (status < 0)
 			break;
 
@@ -2482,7 +2522,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, newpath);
+		status = check_read_only(tracee, AT_FDCWD, newpath);
 		if (status < 0)
 			break;
 
@@ -2496,7 +2536,7 @@ int translate_syscall_enter(Tracee *tracee)
 		if (status < 0)
 			break;
 
-		status = check_read_only(tracee, newpath);
+		status = check_read_only(tracee, newdirfd, newpath);
 		if (status < 0)
 			break;
 
@@ -2609,7 +2649,21 @@ int translate_syscall_enter(Tracee *tracee)
 
 		break;
 	}
-	
+
+	case PR_bpf:
+	case PR_kexec_load:
+	case PR_process_vm_writev:
+	case PR_process_vm_readv:
+		/* These syscalls can reach host resources outside the
+		 * emulated namespace: bpf/kexec_load touch kernel state,
+		 * and process_vm_* can read or write the memory of any
+		 * process the real uid may reach (including ones outside
+		 * PRoot's tracee tree), bypassing the filesystem sandbox.
+		 * Deny them outright; nothing inside a guest rootfs needs
+		 * them.  */
+		status = -EPERM;
+		break;
+
 	case PR_memfd_create:
 		{
 			char memfd_name[20] = {};

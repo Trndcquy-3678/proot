@@ -138,6 +138,15 @@ static void sysvipc_shm_send_helper_request(struct SysVIpcShmHelperRequest *requ
 			close(pipe_proot2helper[1]);
 			return;
 		}
+		/* Hand the helper our pid so it can restrict the AF_UNIX
+		 * socket to tracees that are descendants of this PRoot
+		 * instance (defense against a local attacker connecting to
+		 * the helper's socket and grabbing another process's shared
+		 * memory fd).  */
+		char ppid_buf[32];
+		snprintf(ppid_buf, sizeof(ppid_buf), "%d", getpid());
+		setenv("PROOT_SHM_HELPER_PPID", ppid_buf, 1);
+
 		pid_t forked = fork();
 		if (forked == 0) {
 			close(pipe_proot2helper[1]);
@@ -499,7 +508,7 @@ int sysvipc_shmat_chain(Tracee *tracee, struct SysVIpcConfig *config)
 		if (read_data(tracee, &fd, pointers.cmsg_control_ptr + sizeof(cmsg), 4) < 0) {
 			goto fail_close_socket;
 		}
-		if (fd > 0xFFFF) {
+		if (fd == 0 || fd > 0xFFFF) {
 			goto fail_close_socket;
 		}
 		config->shmat_mem_fd = fd;
@@ -803,6 +812,78 @@ static int sysvipc_shm_do_allocate(size_t size, int shmid) {
 #endif
 }
 
+/**
+ * Return true if @pid is (a descendant of) @ancestor, by walking the
+ * PPid chain in /proc.  Used to restrict the shm helper's AF_UNIX
+ * socket to tracees that actually belong to this PRoot instance.
+ */
+static bool is_descendant(pid_t pid, pid_t ancestor)
+{
+	char status_path[64];
+	pid_t current = pid;
+
+	for (int depth = 0; depth < 64; depth++) {
+		if (current == ancestor)
+			return true;
+		if (current <= 1)
+			return false;
+		snprintf(status_path, sizeof(status_path),
+			"/proc/%d/status", current);
+		FILE *f = fopen(status_path, "r");
+		if (f == NULL)
+			return false;
+		bool found = false;
+		char line[256];
+		while (fgets(line, sizeof(line), f) != NULL) {
+			if (strncmp(line, "PPid:", 5) == 0) {
+				current = (pid_t) strtol(line + 5, NULL, 10);
+				found = true;
+				break;
+			}
+		}
+		fclose(f);
+		if (!found)
+			return false;
+	}
+	return false;
+}
+
+/**
+ * Reject AF_UNIX clients that are not tracees of this PRoot instance.
+ * With SO_PEERCRED we learn the peer's pid/uid; we require the same uid
+ * as the helper and that the peer be a descendant of the PRoot pid passed
+ * via PROOT_SHM_HELPER_PPID.  Without this, any local process that learns
+ * the (random) socket path could connect and receive another process's
+ * shared-memory fd through the DISTRIBUTE handler.
+ */
+static int accept_authorized_client(int server_fd)
+{
+	struct ucred cred;
+	socklen_t cred_len = sizeof(cred);
+	int client_fd = accept(server_fd, NULL, 0);
+	if (client_fd < 0)
+		return -1;
+
+	if (getsockopt(client_fd, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) < 0) {
+		close(client_fd);
+		return -1;
+	}
+
+	if (cred.uid != getuid()) {
+		close(client_fd);
+		return -1;
+	}
+
+	char *ppid_env = getenv("PROOT_SHM_HELPER_PPID");
+	pid_t proot_pid = ppid_env != NULL ? (pid_t) strtol(ppid_env, NULL, 10) : 1;
+	if (proot_pid <= 1 || !is_descendant(cred.pid, proot_pid)) {
+		close(client_fd);
+		return -1;
+	}
+
+	return client_fd;
+}
+
 void sysvipc_shm_helper_main() {
 	char *path;
 	int socket_server_fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
@@ -872,7 +953,7 @@ void sysvipc_shm_helper_main() {
 			break;
 		case SHMHELPER_DISTRIBUTE:
 		{
-			int client_fd = accept(socket_server_fd, NULL, 0);
+			int client_fd = accept_authorized_client(socket_server_fd);
 
 			char nothing = '!';
 			struct iovec nothing_ptr = { .iov_base = &nothing, .iov_len = 1 };
