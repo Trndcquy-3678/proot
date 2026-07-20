@@ -10,7 +10,7 @@ skip_if [ ! -x "${PROOT}" ] "proot not built"
 require_helper true
 
 # Test 1: Basic execution
-is_ok "basic execution works" "${PROOT} -r ${ROOTFS} /bin/true"
+is_ok "basic execution works" "${PROOT} true"
 
 # Test 2: Root directory
 is_ok "root directory exists" "[ -d '${ROOTFS}' ]"

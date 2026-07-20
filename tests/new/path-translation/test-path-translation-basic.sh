@@ -11,13 +11,13 @@ require mcookie "mcookie not found"
 TEST_FILE=$(tmpdir "testfile")
 echo "hello" > "$TEST_FILE"
 
-# Test 1: Binding translates path
+# Test 1: Binding makes file visible at guest path
 RESULT=$(${PROOT} -b "$TEST_FILE":/mounted cat /mounted 2>/dev/null)
-is "$RESULT" "hello" "path translation works"
+is "$RESULT" "hello" "binding makes file visible at guest path"
 
-# Test 2: Original path not visible
+# Test 2: Original path still accessible (bind is additive, like mount --bind)
 RESULT=$(${PROOT} -b "$TEST_FILE":/mounted cat "$TEST_FILE" 2>/dev/null)
-like "$RESULT" "No such file or directory" "original path not visible"
+is "$RESULT" "hello" "original path still accessible after bind"
 
 # Cleanup
 rm -f "$TEST_FILE"

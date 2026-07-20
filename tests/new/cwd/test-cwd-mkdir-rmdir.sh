@@ -8,7 +8,8 @@ require mkdir
 require rmdir
 
 TMP=$(mcookie)
-cd /tmp
+TMP_DIR=${TMPDIR:-/tmp}
+cd "$TMP_DIR"
 
 exit_code 0 "mkdir ./${TMP}" ${PROOT} mkdir "./${TMP}"
 exit_code 0 "rmdir ./${TMP}" ${PROOT} rmdir "./${TMP}"

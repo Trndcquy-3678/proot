@@ -32,7 +32,7 @@ is_fail "readlink /proc/self/fd/0/../0 fails" "${PROOT} sh -c 'echo OK | readlin
 RESULT=$(${PROOT} sh -c 'echo "echo OK" | sh /proc/self/fd/0' 2>/dev/null)
 like "$RESULT" "^OK$" "execute script via /proc/self/fd/0"
 
-${PROOT} sh -c "exec 6<>${TMP}; readlink /proc/self/fd/6" 2>/dev/null | grep -q "^${TMP}$"
-is_ok "readlink /proc/self/fd/6 resolves" "..."
+RESULT=$(${PROOT} sh -c "exec 6<>${TMP}; readlink /proc/self/fd/6" 2>/dev/null)
+is "$RESULT" "${TMP}" "readlink /proc/self/fd/6 resolves"
 
 plan 9

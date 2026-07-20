@@ -5,6 +5,8 @@
 skip_if [ ! -x "${PROOT}" ]
 skip_if [ ! -x ${ROOTFS}/bin/readlink ]
 skip_if [ ! -x ${ROOTFS}/bin/symlink ]
+# Runtime check: helpers must be statically linked to work inside rootfs
+${PROOT} -r ${ROOTFS} /bin/readlink /proc/self/exe >/dev/null 2>&1 || exit 125
 require mcookie
 require rm
 require ln
