@@ -1,0 +1,131 @@
+#!/bin/sh
+# PRoot test runner
+# Usage: ./run [test-directory]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Resolve paths: make them absolute so cd inside runner doesn't break them
+resolve_path() {
+    case "$1" in
+        /*) echo "$1" ;;
+        *)  echo "${SCRIPT_DIR}/$1" ;;
+    esac
+}
+
+PROOT="${PROOT:-${SCRIPT_DIR}/../src/proot}"
+ROOTFS="${ROOTFS:-${SCRIPT_DIR}/rootfs}"
+PROOT="$(resolve_path "$PROOT")"
+ROOTFS="$(resolve_path "$ROOTFS")"
+TMPDIR="${TMPDIR:-${SCRIPT_DIR}/tmp}"
+TEST_DIR="${1:-${SCRIPT_DIR}}"
+
+# Colors (if terminal supports it)
+if [ -t 1 ]; then
+    GREEN='\033[0;32m'
+    RED='\033[0;31m'
+    YELLOW='\033[0;33m'
+    NC='\033[0m'
+else
+    GREEN=''
+    RED=''
+    YELLOW=''
+    NC=''
+fi
+
+# Test counts
+TOTAL=0
+PASS=0
+FAIL=0
+SKIP=0
+
+# Helper: colored output
+green()  { printf "${GREEN}%s${NC}" "$1"; }
+red()    { printf "${RED}%s${NC}" "$1"; }
+yellow() { printf "${YELLOW}%s${NC}" "$1"; }
+
+# Run a single test
+run_test() {
+    test_file="$1"
+    test_name="$(basename "$test_file" .sh)"
+
+    TOTAL=$((TOTAL + 1))
+
+    # Export environment for test
+    export PROOT ROOTFS TMPDIR
+
+    # Run test from its directory so dirname "$0" resolves
+    test_dir="$(cd "$(dirname "$test_file")" && pwd)"
+    output=""
+    exit_code=0
+    output=$(cd "$test_dir" && sh "$(basename "$test_file")" 2>&1) || exit_code=$?
+
+    # Parse TAP output
+    if echo "$output" | grep -q "^1\.\.[0-9]"; then
+        test_ok=true
+        echo "$output" | grep -E "^(ok|not ok) " | while IFS= read -r line; do
+            case "$line" in
+                "not ok "*)
+                    printf "%s %s: %s\n" "$(red "FAIL")" "$test_name" "$line"
+                    ;;
+                "ok "*SKIP*)
+                    printf "%s %s: %s\n" "$(yellow "SKIP")" "$test_name" "$line"
+                    ;;
+                "ok "*)
+                    printf "%s %s: %s\n" "$(green "PASS")" "$test_name" "$line"
+                    ;;
+            esac
+        done
+        # Count pass/fail from TAP output
+        if echo "$output" | grep -q "^not ok "; then
+            FAIL=$((FAIL + 1))
+        else
+            PASS=$((PASS + 1))
+        fi
+    elif [ "$exit_code" -eq 0 ]; then
+        printf "%s %s\n" "$(green "PASS")" "$test_name"
+        PASS=$((PASS + 1))
+    elif [ "$exit_code" -eq 125 ]; then
+        printf "%s %s\n" "$(yellow "SKIP")" "$test_name"
+        SKIP=$((SKIP + 1))
+    else
+        printf "%s %s (exit %d)\n" "$(red "FAIL")" "$test_name" "$exit_code"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# Main
+echo "Running PRoot tests..."
+echo "PROOT=${PROOT}"
+echo "ROOTFS=${ROOTFS}"
+echo ""
+
+# Create temp directory
+mkdir -p "$TMPDIR"
+
+# Find and run tests
+if [ -f "$TEST_DIR" ]; then
+    # Single test file
+    run_test "$TEST_DIR"
+elif [ -d "$TEST_DIR" ]; then
+    # Directory of tests - use for loop to avoid subshell
+    for test_file in $(find "$TEST_DIR" -name "test-*.sh" -type f | sort); do
+        run_test "$test_file"
+    done
+fi
+
+# Summary
+echo ""
+echo "==========================="
+echo "Tests: ${TOTAL}"
+printf "Passed: ${GREEN}%d${NC}\n" "$PASS"
+printf "Failed: ${RED}%d${NC}\n" "$FAIL"
+printf "Skipped: ${YELLOW}%d${NC}\n" "$SKIP"
+echo "==========================="
+
+# Exit code
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi
+exit 0
