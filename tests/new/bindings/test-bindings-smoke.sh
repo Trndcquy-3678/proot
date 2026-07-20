@@ -7,7 +7,7 @@
 skip_if [ ! -x "${PROOT}" ] "proot not built"
 
 # Skip if helpers not built
-require_helper true || return 0
+require_helper true
 
 # Test 1: Basic execution
 is_ok "basic execution works" "${PROOT} -r ${ROOTFS} /bin/true"

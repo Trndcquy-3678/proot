@@ -4,7 +4,7 @@
 
 
 skip_if [ ! -x "${PROOT}" ] "proot not built"
-require_helper true || return 0
+require_helper true
 require mcookie "mcookie not found"
 
 # Create test file

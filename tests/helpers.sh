@@ -153,8 +153,6 @@ ROOTFS_BIN="${ROOTFS}/bin"
 require_helper() {
     local name="$1"
     if [ ! -x "${ROOTFS_BIN}/${name}" ]; then
-        skip "helper not built: ${name}"
-        return 0
+        exit 125
     fi
-    return 1
 }

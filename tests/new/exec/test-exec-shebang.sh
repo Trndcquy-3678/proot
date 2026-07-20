@@ -4,7 +4,7 @@
 
 
 skip_if [ ! -x "${PROOT}" ] "proot not built"
-require_helper true || return 0
+require_helper true
 
 # Create test script with shebang
 TEST_SCRIPT=$(tmpdir "test-script.sh")
