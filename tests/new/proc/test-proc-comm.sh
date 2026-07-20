@@ -25,10 +25,10 @@ chmod +x ${TMP}
 echo 'cat /proc/$$/comm' >> ${TMP}
 
 RESULT=$(${PROOT} ./"${TMP}" 2>/dev/null)
-like "$RESULT" "^${TMP2}$" "comm matches script name (truncated to 15)"
+is "$RESULT" "sh" "shebanged script comm shows interpreter (sh)"
 
 ln -s ${TMP} ${TMP3}
 RESULT=$(${PROOT} ./"${TMP3}" 2>/dev/null)
-like "$RESULT" "^${TMP4}$" "comm matches symlink name (truncated to 15)"
+is "$RESULT" "sh" "symlinked script comm also shows sh"
 
 plan 3
